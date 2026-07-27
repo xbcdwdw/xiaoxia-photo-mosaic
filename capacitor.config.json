@@ -1,6 +1,6 @@
 {
   "appId": "com.photomoasic.android",
-  "appName": "照片拼图器",
+  "appName": "小夏同学照片拼图器",
   "webDir": "www",
   "bundledWebRuntime": false,
   "server": {
