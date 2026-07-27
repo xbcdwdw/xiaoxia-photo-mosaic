@@ -1,0 +1,13 @@
+{
+  "name": "照片拼图器",
+  "short_name": "拼图器",
+  "description": "照片拼图排版打印工具",
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f0f0f0",
+  "theme_color": "#07c160",
+  "icons": [
+    { "src": "build/icon.png", "sizes": "256x256", "type": "image/png" }
+  ]
+}

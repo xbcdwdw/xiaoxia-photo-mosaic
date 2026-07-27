@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>照片拼图器</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 顶栏 -->
+  <div class="header">
+    <div class="header-title">📸 <span>照片拼图器</span></div>
+    <div class="header-info">6寸相纸 · 最高600dpi · 拖拽图片到左侧添加</div>
+    <button class="dark-toggle" id="darkToggle">🌙</button>
+  </div>
+
+  <!-- 拖拽删除区 -->
+  <div class="trash-zone" id="trashZone">🗑️ 拖到这里删除</div>
+
+  <!-- 主体 -->
+  <div class="main">
+    <!-- 左侧边栏：照片列表 -->
+    <div class="sidebar">
+      <div class="sidebar-title">
+        <span>📷 照片</span>
+        <span class="count" id="photoCount">0</span>
+        <button class="clear-btn" id="clearBtn">清空</button>
+        <button class="add-btn-inline" id="addBtnInline" style="display:none">＋ 添加</button>
+      </div>
+      <div class="photo-list" id="photoList">
+        <div class="empty-hint">拖拽图片到此处<br>或点击下方按钮添加</div>
+      </div>
+      <div class="add-area">
+        <button class="add-btn" id="addBtn">＋ 添加照片</button>
+        <input type="file" id="fileInput" accept="image/*" multiple style="display:none">
+      </div>
+    </div>
+
+    <!-- 右侧内容 -->
+    <div class="content">
+      <!-- 参数控件 - 第一行：排版 + 标准尺寸 -->
+      <div class="controls-row">
+        <div class="control-group">
+          <label>排版</label>
+          <div class="control-btns" id="layoutBtns">
+            <button class="control-btn layout-btn active" data-n="2"><div class="layout-icon layout-icon-2"><div class="cell"></div><div class="cell"></div></div>2张</button>
+            <button class="control-btn layout-btn" data-n="3"><div class="layout-icon layout-icon-3"><div class="cell"></div><div class="cell"></div><div class="cell"></div></div>3张</button>
+            <button class="control-btn layout-btn" data-n="4"><div class="layout-icon layout-icon-4"><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div></div>4张</button>
+            <button class="control-btn layout-btn" data-n="6"><div class="layout-icon layout-icon-6"><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div></div>6张</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <label>标准尺寸</label>
+          <div class="control-btns" id="stdSizeBtns"></div>
+        </div>
+      </div>
+
+      <!-- 参数控件 - 第二行：间距 + 圆角 + 反锐化 + 开关 + 蓝牙/调试 -->
+      <div class="controls-row">
+        <div class="control-group">
+          <label>间距</label>
+          <div class="control-btns">
+            <button class="control-btn active" data-border="zero">无缝</button>
+            <button class="control-btn" data-border="small">1mm</button>
+            <button class="control-btn" data-border="large">2mm</button>
+            <button class="control-btn" data-border="xlarge">4mm</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <label>圆角</label>
+          <div class="control-btns">
+            <button class="control-btn active" data-corner="none">无</button>
+            <button class="control-btn" data-corner="small">2mm</button>
+            <button class="control-btn" data-corner="medium">4mm</button>
+            <button class="control-btn" data-corner="large">8mm</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <label>反锐化</label>
+          <div class="control-btns">
+            <button class="control-btn active" data-anti="0">关闭</button>
+            <button class="control-btn" data-anti="1">1px</button>
+            <button class="control-btn" data-anti="2">2px</button>
+            <button class="control-btn" data-anti="3">3px</button>
+          </div>
+        </div>
+        <div class="switch-wrap">
+        <div class="switch-row">
+          <input type="checkbox" id="cutLineToggle" checked>
+          <label for="cutLineToggle">✁ 裁切线</label>
+        </div>
+        <div class="switch-row">
+          <input type="checkbox" id="highResToggle">
+          <label for="highResToggle">🖼 原画输出</label>
+        </div>
+        <div class="switch-row">
+          <input type="checkbox" id="debugToggle">
+          <label for="debugToggle">🔧 调试</label>
+        </div>
+        </div>
+      </div>
+
+      <!-- 调试面板 -->
+      <div id="debugPanel" class="debug-panel" style="display:none"></div>
+
+      <div class="layout-detail" id="layoutDetail"></div>
+
+      <!-- 预览 -->
+      <div class="preview-section">
+        <div class="preview-header">
+          <div class="card-title" id="previewTitle">拼图预览</div>
+          <span class="preview-hint">(右键旋转 · 左键拖动微调)</span>
+          <div class="page-nav" id="pageNav" style="display:none;margin-left:auto">
+            <button class="page-btn" id="prevPageBtn">◀</button>
+            <span class="page-indicator" id="pageIndicator">1/1</span>
+            <button class="page-btn" id="nextPageBtn">▶</button>
+          </div>
+        </div>
+        <div class="preview-wrap">
+          <canvas id="previewCanvas"></canvas>
+          <canvas id="exportCanvas"></canvas>
+        </div>
+        <div class="cell-info" id="cellInfo"></div>
+        <div class="slot-controls" id="slotControls"></div>
+        <div class="result-section" id="resultSection" style="display:none;">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <strong>已生成</strong>
+          </div>
+          <div class="result-grid" id="resultGrid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 底栏 -->
+  <div class="footer">
+    <div class="progress-wrap" id="progressWrap" style="display:none">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <button class="btn-primary" id="genSaveBtn" disabled>生成拼图</button>
+    <div class="post-gen-btns" id="postGenBtns" style="display:none">
+      <button class="btn-secondary" id="regenBtn">↻ 重新生成</button>
+      <button class="btn-primary" id="saveAllBtn" style="margin-left:8px">💾 全部保存</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
