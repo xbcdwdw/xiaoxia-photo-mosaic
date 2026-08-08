@@ -11,3 +11,6 @@ dist/
 *.zip
 *.ico
 .DS_Store
+
+# 构建产物（APK 通过 GitHub/Gitee Release 发布）
+*.apk

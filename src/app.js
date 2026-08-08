@@ -40,6 +40,14 @@ const state = {
   lastExportDPI: 600,
   isMobile: window.innerWidth < 700 || ('ontouchstart' in window),
   darkMode: false,
+  // 排序模式：'time' = 按拍摄时间; 'order' = 按选择顺序（添加顺序）
+  sortMode: 'time',
+  // 'asc' = 早→晚（默认）; 'desc' = 晚→早
+  sortDir: 'asc',
+  // 点击交换顺序：true = 开启（轻点选中照片 → 再轻点另一张交换，只识别点击，不识别滑动/长按）
+  swapByTap: true,
+  // 当前点击选中的照片 id
+  swapSelectedId: null,
 }
 
 // ===== DOM =====
@@ -78,17 +86,170 @@ function loadImage(src) {
 // ===== 照片管理 =====
 let photoIdCounter = 0
 
-function addPhotos(files) {
+// ----- 读取拍摄时间（EXIF DateTimeOriginal，失败时回退文件修改时间） -----
+function parseExifDateTimeString(s) {
+  // EXIF 时间格式: "2024:01:15 09:30:45"
+  const m = /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s || '')
+  if (!m) return null
+  const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])
+  return isNaN(d.getTime()) ? null : d
+}
+
+function parseJpegExif(buf) {
+  // 简化但完整的 JPEG EXIF 解析：定位 APP1 段中的 Exif TIFF，
+  // 依次读取 IFD0 -> ExifIFD(0x8769)，取 DateTimeOriginal(0x9003)/DateTimeDigitized(0x9004)/DateTime(0x0132)
+  try {
+    if (buf.length < 4 || buf[0] !== 0xFF || buf[1] !== 0xD8) return null
+    let off = 2
+    while (off + 4 <= buf.length) {
+      if (buf[off] !== 0xFF) break
+      const marker = buf[off + 1]
+      if (marker === 0xD8 || marker === 0x01) { off += 2; continue } // SOI / TEM
+      if (marker >= 0xD0 && marker <= 0xD7) { off += 2; continue }   // RSTn
+      if (marker === 0xD9) break                                    // EOI
+      const len = (buf[off + 2] << 8) | buf[off + 3]
+      if (marker === 0xE1) { // APP1
+        const segStart = off + 4
+        // 检查 "Exif\0\0"
+        if (segStart + 6 <= buf.length &&
+            buf[segStart] === 0x45 && buf[segStart + 1] === 0x78 &&
+            buf[segStart + 2] === 0x69 && buf[segStart + 3] === 0x66 &&
+            buf[segStart + 4] === 0x00 && buf[segStart + 5] === 0x00) {
+          return parseTiffExif(buf.subarray(segStart + 6))
+        }
+        return null // 已到 APP1 但不是 Exif
+      }
+      if (len < 2) break
+      off += 2 + len
+    }
+  } catch (e) { /* 解析失败返回 null */ }
+  return null
+}
+
+function parseTiffExif(view) {
+  const dv = new DataView(view.buffer, view.byteOffset, view.byteLength)
+  if (view.length < 8) return null
+  const little = view[0] === 0x49 // 'II' 小端
+  const u16 = little ? (o) => dv.getUint16(o, true) : (o) => dv.getUint16(o, false)
+  const u32 = little ? (o) => dv.getUint32(o, true) : (o) => dv.getUint32(o, false)
+  if (u16(2) !== 0x002A) return null
+  const ifd0 = u32(4)
+  if (ifd0 + 2 > view.length) return null
+  const count = u16(ifd0)
+  let exifPtr = -1
+  for (let i = 0; i < count; i++) {
+    const ent = ifd0 + 2 + i * 12
+    if (ent + 12 > view.length) break
+    const tag = u16(ent)
+    if (tag === 0x8769) { exifPtr = u32(ent + 8); break } // ExifIFDPointer
+  }
+  if (exifPtr < 0 || exifPtr + 2 > view.length) return null
+  const exifCount = u16(exifPtr)
+  const find = (t) => {
+    for (let i = 0; i < exifCount; i++) {
+      const ent = exifPtr + 2 + i * 12
+      if (ent + 12 > view.length) break
+      if (u16(ent) === t) {
+        const type = u16(ent + 2), n = u32(ent + 4)
+        const off = n === 1 && type <= 7 ? ent + 8 : u32(ent + 8)
+        // ASCII 字符串（type=2）
+        if (type === 2 && off + 20 <= view.length) {
+          const bytes = []
+          for (let k = 0; k < 19; k++) {
+            const b = view[off + k]
+            if (b === 0) break
+            bytes.push(String.fromCharCode(b))
+          }
+          return bytes.join('')
+        }
+        return null
+      }
+    }
+    return null
+  }
+  return parseExifDateTimeString(
+    find(0x9003) || find(0x9004) || find(0x0132)
+  )
+}
+
+function readPhotoTime(file) {
+  return new Promise((resolve) => {
+    const fallback = new Date(file.lastModified || Date.now())
+    // 仅 JPEG 含标准 EXIF；其余格式直接用文件时间
+    if (!file || file.type !== 'image/jpeg') { resolve(fallback); return }
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const arr = new Uint8Array(reader.result)
+        const t = parseJpegExif(arr)
+        resolve(t || fallback)
+      } catch (e) { resolve(fallback) }
+    }
+    reader.onerror = () => resolve(fallback)
+    reader.readAsArrayBuffer(file)
+  })
+}
+
+async function addPhotos(files) {
   const batch = []
   for (const file of files) {
     if (!file.type.startsWith('image/')) continue
     const id = ++photoIdCounter
     const url = URL.createObjectURL(file)
-    batch.push({ id, url, file, rotation: 0, offX: 0, offY: 0, offXRatio: 0, offYRatio: 0 })
+    batch.push({ id, url, file, rotation: 0, offX: 0, offY: 0, offXRatio: 0, offYRatio: 0, takenAt: undefined })
   }
+  if (!batch.length) return
+  // 记录原始序号，保证时间相同时排序稳定、且可恢复"选择顺序"
+  batch.forEach((p, i) => { p._origIdx = state.photos.length + i })
   state.photos = state.photos.concat(batch)
+  if (state.sortMode === 'time') {
+    await sortPhotosByTime()
+  } else {
+    renderPhotoList()
+    rebuild()
+  }
+}
+
+// 按拍摄时间重新排列（升序/降序），时间缺失的按文件修改时间，仍缺失的保持原顺序
+async function sortPhotosByTime() {
+  if (state.photos.length < 2) { renderPhotoList(); return }
+  for (const p of state.photos) {
+    if (p.takenAt === undefined && p.file) p.takenAt = await readPhotoTime(p.file)
+  }
+  const dir = state.sortDir === 'desc' ? -1 : 1
+  const withIdx = state.photos.map((p, i) => ({ p, i }))
+  withIdx.sort((a, b) => {
+    const ta = (a.p.takenAt && a.p.takenAt.getTime()) || (a.p.file ? a.p.file.lastModified : 0)
+    const tb = (b.p.takenAt && b.p.takenAt.getTime()) || (b.p.file ? b.p.file.lastModified : 0)
+    const diff = (ta - tb) * dir
+    if (diff !== 0) return diff
+    return (a.p._origIdx ?? a.i) - (b.p._origIdx ?? b.i)
+  })
+  state.photos = withIdx.map(x => x.p)
   renderPhotoList()
   rebuild()
+}
+
+// 按选择顺序（添加顺序）恢复排列
+function sortBySelectOrder() {
+  if (state.photos.length < 2) { renderPhotoList(); return }
+  const withIdx = state.photos.map((p, i) => ({ p, i }))
+  withIdx.sort((a, b) => (a.p._origIdx ?? a.i) - (b.p._origIdx ?? b.i))
+  state.photos = withIdx.map(x => x.p)
+  renderPhotoList()
+  rebuild()
+}
+
+function syncSortUIControls() {
+  const t = $('sortToggle'), d = $('sortDirBtn')
+  if (t) {
+    t.classList.toggle('active', state.sortMode === 'time')
+    t.textContent = state.sortMode === 'time' ? '📅 时间排序' : '📋 选择顺序'
+  }
+  if (d) {
+    d.style.display = state.sortMode === 'time' ? '' : 'none'
+    d.textContent = state.sortDir === 'desc' ? '↓ 新→旧' : '↑ 早→晚'
+  }
 }
 
 function removePhoto(id) {
@@ -106,6 +267,7 @@ function clearAllPhotos() {
   state.photos.forEach(p => URL.revokeObjectURL(p.url))
   state.photos = []
   state.currentPhotos = []
+  state.swapSelectedId = null
   renderPhotoList()
   rebuild()
   $('resultSection').style.display = 'none'
@@ -129,6 +291,10 @@ function renderPhotoList() {
     div.className = 'photo-item'
     div.draggable = !state.isMobile
     div.dataset.id = p.id
+    if (p.id === state.swapSelectedId) {
+      div.style.outline = '3px solid #07c160'
+      div.style.outlineOffset = '-3px'
+    }
     div.innerHTML = `
       <img src="${p.url}">
       <span class="idx-label">${i + 1}</span>
@@ -172,56 +338,57 @@ function movePhoto(from, to) {
   goToPage(0)
 }
 
+// 手机端"点击交换顺序"：只识别点击（轻点选中 → 再轻点另一张交换）
+// 完全不识别长按和滑动：横滑浏览、长按均不会触发交换
 function setupTouchReorder(list) {
-  let swapMode = false, swapFrom = -1
+  // 防重复绑定：renderPhotoList 每次渲染都会调用本函数
+  if (list.dataset.touchReorderBound) return
+  list.dataset.touchReorderBound = '1'
 
-  list.addEventListener('touchstart', (e) => {
-    const item = e.target.closest('.photo-item')
-    if (!item || e.target.closest('.remove-overlay')) return
-    const idx = Array.from(list.children).indexOf(item)
+  let pressStartX = 0, pressStartY = 0
+  const TAP_THRESHOLD = 10 // px：位移小于此值才算"点击"
 
-    if (swapMode) {
-      // 交换模式中：点击另一张 → 交换
-      e.preventDefault()
-      if (idx !== swapFrom) {
-        movePhoto(swapFrom, idx)
-      }
-      // 退出交换模式
-      exitSwapMode(list)
-      return
-    }
-
-    // 长按进入交换模式
-    setTimeout(() => {
-      if (!swapMode) {
-        swapMode = true
-        swapFrom = idx
-        item.style.outline = '3px solid #07c160'
-        item.style.outlineOffset = '-3px'
-        // 显示交换提示
-        toast('点击另一张照片交换位置')
-        // 禁用滚动
-        list.style.overflow = 'hidden'
-      }
-    }, 400)
-  }, { passive: true })
-
-  function exitSwapMode(list) {
-    swapMode = false
-    swapFrom = -1
-    list.querySelectorAll('.photo-item').forEach(el => {
-      el.style.outline = ''
-      el.style.outlineOffset = ''
-    })
-    list.style.overflow = ''
+  function clearSelection() {
+    if (state.swapSelectedId === null) return
+    state.swapSelectedId = null
+    renderPhotoList()
   }
 
-  // 点击空白区域退出交换模式
+  list.addEventListener('touchstart', (e) => {
+    if (!state.swapByTap) return
+    const t = e.touches[0]
+    if (!t) return
+    pressStartX = t.clientX
+    pressStartY = t.clientY
+  }, { passive: true })
+
   list.addEventListener('touchend', (e) => {
-    if (swapMode && !e.target.closest('.photo-item')) {
-      exitSwapMode(list)
+    if (!state.swapByTap) return
+    const t = e.changedTouches && e.changedTouches[0]
+    if (!t) return
+    // 位移超过阈值 → 是滑动，不响应
+    if (Math.abs(t.clientX - pressStartX) > TAP_THRESHOLD || Math.abs(t.clientY - pressStartY) > TAP_THRESHOLD) return
+    // 点击空白或删除按钮 → 取消选中
+    const item = e.target.closest('.photo-item')
+    if (!item || e.target.closest('.remove-overlay')) { clearSelection(); return }
+    const idx = Array.from(list.children).indexOf(item)
+    const p = state.photos[idx]
+    if (!p) return
+    if (state.swapSelectedId === null) {
+      // 第一次点击：选中该照片
+      state.swapSelectedId = p.id
+      renderPhotoList()
+      toast('已选中第 ' + (idx + 1) + ' 张，点击另一张交换位置')
+    } else if (state.swapSelectedId === p.id) {
+      // 点击同一张：取消选中
+      clearSelection()
+    } else {
+      // 点击另一张：交换顺序
+      const fromIdx = state.photos.findIndex(x => x.id === state.swapSelectedId)
+      state.swapSelectedId = null
+      if (fromIdx >= 0) movePhoto(fromIdx, idx)
     }
-  })
+  }, { passive: true })
 }
 
 // ===== 拖拽添加入口 =====
@@ -973,6 +1140,69 @@ function initControls() {
   // 清空按钮
   const clearBtn = $('clearBtn')
   if (clearBtn) clearBtn.onclick = clearAllPhotos
+
+  // 排序模式：切换 按拍摄时间 / 按选择顺序（切换后立即自动重排，无需刷新）
+  const sortToggle = $('sortToggle')
+  if (sortToggle) {
+    sortToggle.onclick = async () => {
+      state.sortMode = state.sortMode === 'time' ? 'order' : 'time'
+      if (state.sortMode === 'time') {
+        await sortPhotosByTime()
+      } else {
+        sortBySelectOrder()
+      }
+      syncSortUIControls()
+      saveSettings()
+    }
+  }
+  const sortDirBtn = $('sortDirBtn')
+  if (sortDirBtn) {
+    sortDirBtn.onclick = async () => {
+      state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc'
+      await sortPhotosByTime()
+      syncSortUIControls()
+      saveSettings()
+    }
+  }
+  const sortApplyBtn = $('sortApplyBtn')
+  if (sortApplyBtn) {
+    sortApplyBtn.onclick = async () => {
+      if (state.photos.length < 2) { toast('至少需要 2 张照片'); return }
+      if (state.sortMode === 'time') {
+        await sortPhotosByTime()
+        toast(state.sortDir === 'desc' ? '已按拍摄时间倒序排列' : '已按拍摄时间正序排列')
+      } else {
+        sortBySelectOrder()
+        toast('已按选择顺序排列')
+      }
+      syncSortUIControls()
+      saveSettings()
+    }
+  }
+  // 点击交换顺序开关（仅手机端）
+  const swapToggle = $('swapToggle')
+  if (swapToggle) {
+    swapToggle.onclick = () => {
+      state.swapByTap = !state.swapByTap
+      if (!state.swapByTap) {
+        state.swapSelectedId = null
+        renderPhotoList()
+      }
+      syncSwapUIControls()
+      saveSettings()
+    }
+  }
+  syncSortUIControls()
+  syncSwapUIControls()
+}
+
+// 同步"点击交换顺序"开关状态（手机端显示，桌面端隐藏）
+function syncSwapUIControls() {
+  const b = $('swapToggle')
+  if (!b) return
+  b.style.display = state.isMobile ? '' : 'none'
+  b.classList.toggle('active', !!state.swapByTap)
+  b.textContent = state.swapByTap ? '⇄ 交换 开' : '⇄ 交换 关'
 }
 
 function calcMaxPerPage(w, h) {
@@ -1077,7 +1307,7 @@ function debugLog(msg) {
 }
 
 // ===== 设置持久化 =====
-const SAVE_KEYS = ['layout','borderType','cornerType','antiSharpen','showCutLine','highRes','standardMode','standardIdx','darkMode']
+const SAVE_KEYS = ['layout','borderType','cornerType','antiSharpen','showCutLine','highRes','standardMode','standardIdx','darkMode','sortMode','sortDir','swapByTap']
 
 function saveSettings() {
   const data = {}

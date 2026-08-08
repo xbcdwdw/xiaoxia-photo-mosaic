@@ -97,6 +97,23 @@ body.dark-mode .dark-toggle {
 }
 .clear-btn:hover { background: #ffe0e0; }
 
+/* 拍摄时间排序控件 */
+.sort-row {
+  display: flex; gap: 6px; padding: 8px 10px 2px;
+  flex-wrap: wrap; align-items: center;
+}
+.sort-btn {
+  flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border: 1px solid #ddd; background: none; color: var(--text-secondary);
+  font-size: 11px; padding: 4px 6px; border-radius: 5px; cursor: pointer;
+  transition: all 0.15s;
+}
+.sort-btn:hover { border-color: var(--green); color: #07c160; }
+.sort-btn.active { border-color: #07c160; background: rgba(7,193,96,0.08); color: #07c160; font-weight: 600; }
+body.dark-mode .sort-btn { border-color: #444; color: #ccc; }
+body.dark-mode .sort-btn:hover { border-color: #07c160; color: #4ddb96; }
+body.dark-mode .sort-btn.active { border-color: #07c160; background: rgba(7,193,96,0.15); color: #4ddb96; }
+
 /* 照片列表 */
 .photo-list {
   flex: 1; overflow-y: auto; padding: 10px;
@@ -445,8 +462,10 @@ body.loading * { pointer-events: none; }
   /* 照片栏：横向滚动条 */
   .sidebar {
     width: 100%; min-width: 0; border-right: none;
-    border-bottom: 1px solid var(--border-color); max-height: 160px;
+    border-bottom: 1px solid var(--border-color); max-height: 185px;
   }
+  .sort-row { padding: 5px 8px 0; }
+  .sort-btn { font-size: 10px; padding: 3px 4px; }
   .sidebar-title {
     padding: 8px 12px 4px; font-size: 12px;
     display: flex; align-items: center; gap: 8px;
